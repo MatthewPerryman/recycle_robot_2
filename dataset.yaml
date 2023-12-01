@@ -1,0 +1,7 @@
+names:
+- Screw/Phillips
+- Hole
+nc: 2
+path: ..
+train: recycle_robot\Autogathered_Dataset\2 (labeless removed)\Images
+val: recycle_robot\Autogathered_Dataset\2 (labeless removed)\Images

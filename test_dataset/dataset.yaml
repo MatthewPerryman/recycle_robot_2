@@ -1,0 +1,6 @@
+class_names:
+- Screw/Phillips
+- Hole
+nc: 2
+path: C:/Users/drago/Documents/gitrepos/recycle_robot/Autogathered_Dataset/test_dataset/
+test: ../images
