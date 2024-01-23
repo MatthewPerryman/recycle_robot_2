@@ -10,4 +10,4 @@ The second edition of the codebase for the robot system.
 The codebase runs on a bespoke hardware configuration of a computer, raspberry pi and uArm robotic arm (discontinued). This repository is designed to work in tandem with the recycle_robot_server_2, where this repo is used on the computer and the server repo is deployed on the raspberry pi as a server.
 The configuration looks something like this:
 
-<img align="left" alt="GIF" src="gitrepo_highlighted_rig.jpg" width="500"/>
+<img align="left" alt="GIF" src="gitrepo_highlighted_rig_back_blur.jpg" width="500"/>
