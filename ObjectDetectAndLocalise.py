@@ -3,7 +3,7 @@ import cv2
 from matplotlib import pyplot as plt
 import requests
 import numpy as np
-from absl import app, logging
+from absl import app, logging_absl
 from time import time
 import math
 import io
@@ -15,10 +15,14 @@ import torch
 from ultralytics import YOLO
 import os
 import signal
+from enum import Enum
 
 #from Model.detect import Classifier
-from FindCentrewithCanny.ScrewCentre import CannyScrewCentre
 from utils import logging
+
+class function_type(Enum):
+	GATHER_DATA = 1
+	DETECT_MULTIPLE_SCREWS = 2
 
 server_address = "http://192.168.137.28:1024"
 model_type = 'yolov8'
@@ -43,8 +47,6 @@ camera_offset = (0, 0, 10)
 # This difference is between the suction cup and the camera
 robot_head_to_camera = (0.9, 0, 1.8)
 
-Canny = CannyScrewCentre()
-
 # Note: all coordinates are x, y
 image_shape = (480, 640, 3)
 m_frame_distance = (0, 0, -10)
@@ -56,8 +58,49 @@ image_center = (image_shape[1] / 2, image_shape[0] / 2)
 # %20a%20low%20voltage%2C%20high%20performance%2C,the%20serial%20camera%20control%20bus%20or%20MIPI%20interface.
 pixel_size = 0.0014  # (mm) = 1.4 micrometers
 
-sign = lambda a: (a > 0) - (a < 0)
-mag = lambda a: a * sign(a)
+robot_default_location = {'Xd': 200, 'Yd': 0, 'Zd': 150}
+
+class Comms():
+	def set_position(self, vector_target):
+		# Call API to move robot
+		status = requests.post(server_address + "/set_position/", data=bytes(json.dumps(vector_target), 'utf-8'))
+
+		if json.loads(status.content)['response'] == True:
+			print("Move successful")
+			print("Robot Location: {}".format(vector_target))
+			logging.write_log("client", "Robot moved to {}".format(vector_target))
+		else:
+			print("Move Out of Bounds")
+	
+	def get_photo(self):
+		img_request = requests.get(server_address + "/get_photo")
+		logging.write_log("client", "Received Image from Server")
+
+		# Validate image request response
+		if img_request.status_code != requests.codes.ok:
+			print("Error: {}".format(img_request.status_code))
+			return False
+
+		# Read numpy array bytes
+		np_zfile = np.load(io.BytesIO(img_request.content))
+
+		self.image = np_zfile['arr_0']
+
+		return True
+		
+	def move_by_vector(self, destination):
+		return json.loads(requests.post(server_address + "/move_by_vector/",
+										data=bytes(json.dumps(destination), 'utf-8')))['response']
+	
+	def get_position(self):
+		return requests.get(server_address + "/get_position/").content
+	
+	def get_simple_photo(self):
+		return requests.get(server_address + "/get_simple_photo")
+	
+	def get_wrist_angle(self):
+		return requests.get(server_address + "/get_wrist_angle")
+
 
 class Client():
 	def __connect__(self):
@@ -68,7 +111,6 @@ class Client():
 			print(match.group(1))
 			if match:
 				ip_address = match.group(1)
-				ip_address = ping_raspberrypi()
 				if ip_address:
 					global server_address
 					server_address = f"http://{ip_address}:1024"
@@ -94,7 +136,7 @@ class Client():
 				elif model_type == 'tf':
 					self.model = Classifier()
 
-				
+				self.comms = Comms()
 			else:
 				exit()
 		except subprocess.CalledProcessError:
@@ -110,23 +152,22 @@ class Client():
 				c1 = time()
 
 				# Verifying whether the specified URL exist or not
-				image = self.get_simple_photo()
+				self.image = self.get_simple_photo()
 
 				# If no error from getting function
-				if type(image) is np.ndarray:
+				if type(self.image) is np.ndarray:
 					c2 = time()
 					t2 = time()
 
 					# Display the labelled image with a delay of 1 millisecond (minimum delay)
-					output_img, bbxs, scores, nums = self.model.detect(image)
+					self.model.detect()
 
-					cv2.imshow("Laptop", output_img)
-					cv2.waitKey(1)
+					self.show_image()
 				else:
 					print("Get photo failed")
 
-				logging.info('Call API time: {}'.format(c2 - c1))
-				logging.info('Full loop time: {}'.format(t2 - t1))
+				logging_absl.info('Call API time: {}'.format(c2 - c1))
+				logging_absl.info('Full loop time: {}'.format(t2 - t1))
 			except Exception as e:
 				print(str(e))
 
@@ -143,30 +184,22 @@ class Client():
 			vector_target = {'Xd': vector_target[0], 'Yd': vector_target[1], 'Zd': vector_target[2]}
 
 			# Call API to move robot
-			status = requests.post(server_address + "/set_position/", data=bytes(json.dumps(vector_target), 'utf-8'))
-
-			response = json.loads(status.content)['response']
-
-			if response == True:
-				print("Move successful")
-				print("Robot Location: {}".format(vector_target))
-				Logging.write_log("client", "Robot moved to {}".format(vector_target))
-			else:
-				print("Move Out of Bounds")
+			self.comms.set_position(vector_target)
 			
 			if input("Enter y to continue: ") != 'y':
-				break
+				break	
 
-	def get_vector_to_screw(self, img1_screw_centre, Zd, img2_screw_centre=None):
+	def get_vector_to_screw(self, box_coordinates, Zd, img2_screw_centre=None):
 		# This code assumes the passing of one screws coordinates in each image img1_screw_centre[0]
 		# Pixel x (Px) = (y axis distance between image center & box center * pixel size)
 		# y axis label to match real world y and x
 
 		# Add a check because this is called two different ways
-		if type(img1_screw_centre) is tuple:
-			pixel_diff_1 = (image_center[0] - img1_screw_centre[0], image_center[1] - img1_screw_centre[1])
+		if type(box_coordinates) is tuple:
+			pixel_diff_1 = (image_center[0] - box_coordinates[0], image_center[1] - box_coordinates[1])
 		else:
-			pixel_diff_1 = (image_center[0] - img1_screw_centre[0][0], image_center[1] - img1_screw_centre[0][1])
+			print("Think this line needs uncommenting or something")
+			#pixel_diff_1 = (image_center[0] - box_coordinates[0][0], image_center[1] - box_coordinates[0][1])
 		screw_in_camera_location = [pixel_diff_1[0] * pixel_size, pixel_diff_1[1] * pixel_size]
 
 		camera_axis_to_robot_axis = [-1, -1]
@@ -184,105 +217,105 @@ class Client():
 		return camera_to_screw
 	
 	# Detect objects within images and store bouning box predictions to a class variable
-	def detect(self, image):
+	def detect(self):
 		# Predict bounding box objects
-		self.predictions = self.model(image)[0]
+		self.predictions = self.model(self.image)[0]
 
-		self.num_predictions = predictions.boxes.data.shape[0]
+		self.labelled_img = self.predictions.plot()
+
+		self.num_predictions = self.predictions.boxes.data.shape[0]
 
 		# Extract the bouding boxes from predictions and remove from gpu memory
-		self.coordinates = self.predictions.boxes.xyxy.detach().cpu().numpy()
+		self.coordinates_xyxy = self.predictions.boxes.xyxy.detach().cpu().numpy()
+		self.coordinates_xywhn = self.predictions.boxes.xywhn.detach().cpu().numpy()
 
-		# Find the box center closest to the image center
-		candidate_box_centers = []
-		for i in range(predictions.data.shape[0]):
-			# if box is of class screw, find the centre of the box
-			# We are assuming only one screw is within the image and is detected correctly in both images.
-			if predictions.cls[i] == 0:
-				# Try simply finding the middle of the bounding box
-				# Select the bbxs of the screws in the image
-				print(f"classes: {boxes_data.cls}")
-				print(f"Their boxes: {boxes_data.xyxy}")
-				print(f"Their type: {type(boxes_data.xyxy)}")
+		self.box_cls = self.predictions.boxes.cls.detach().cpu().numpy()
 
-				# Convert to numpy array and select the screw box (will be the first in the list if only one was detected)
-				xyxy_coordinates = boxes_data.xyxy.detach().cpu().numpy()
-				xyxy_coordinates = xyxy_coordinates[index]
+		self.box_conf = self.predictions.boxes.conf.detach().cpu().numpy()
 
-				top_left = (xyxy_coordinates[0], xyxy_coordinates[1])
-				bottom_right = (xyxy_coordinates[2], xyxy_coordinates[3])
+	
+	# Function to show the latest image labelled with the object detector
+	def show_labelled_image(self, title):
+		img = Image.fromarray(self.labelled_img[..., ::-1])  # RGB PIL image
+		open_cv_image = np.array(img) 
+		# Convert RGB to BGR 
+		labelled_image = open_cv_image[:, :, ::-1].copy() 
 
-				centre_coordinate = (top_left[0] + (bottom_right[0] - top_left[0]) / 2, top_left[1] + (bottom_right[1] - top_left[1]) / 2)
-				box_center = get_box_centre(predictions, i)
-				candidate_box_centers.append(box_center)
-			#TODO: Apply some duplicate removal algorithm
 
-		# Return the closest boxes: index, top left and right coordinates, and hypot to centre
-		return candidate_box_centers
+		if title == "":
+			title = "Labelled Image"
+		cv2.imshow(title, labelled_image)
+		if cv2.waitKey(0) == 27:
+			cv2.destroyAllWindows()
+			exit()
+
+		cv2.destroyAllWindows()
+
+	def show_image(self, title, close_window_on_key=True, terminate_on_esc=False):
+		cv2.imshow(title, self.image)
+
+		if close_window_on_key:
+			cv2.waitKey(0)
+			cv2.destroyAllWindows()
+
+		# A catch incase something incorrect was detected
+		if terminate_on_esc and (input("Proceed?: ") != 'y'):
+			exit()
 
 
 	def find_and_move_to_screw(self):
 		moving_to_screw = False
 		while not moving_to_screw:
-			Logging.write_log("client", "\nNew Run:\n")
+			logging.write_log("client", "\nNew Run:\n")
 			try:
 				# Creating an request object to store the response
 				# The URL is referenced sys.argv[1]
 
-				ImgRequest = requests.get(server_address + "/get_photo")
-				Logging.write_log("client", "Received Image from Server")
+				self.comms.get_photo()
 
-				# Validate image request response
-				if ImgRequest.status_code != requests.codes.ok:
-					print("Error: {}".format(ImgRequest.status_code))
-					continue
-
-				# Read numpy array bytes
-				np_zfile = np.load(io.BytesIO(ImgRequest.content))
-
-				image1 = np_zfile['arr_0']
-				cv2.imshow("Img1", image1)
-
-				cv2.waitKey(0)
-				cv2.destroyAllWindows()
-
-				# A catch incase something incorrect was detected
-				if input("Proceed?: ") != 'y':
-					exit()
+				self.show_image(terminate_on_esc=True)
 				
-				# Locate and box the screws in both images
-				self.detect(image1)
+				# Locate and box the screws in the captured image
+				self.detect()
 
-				if len(img1_predictions) == 0:
+				if self.num_predictions == 0:
 					print("Error: No object was detected in one of the frames")
 					continue
 
 				## Check for detections
-				labelled_image = self.predictions.plot()  # plot a BGR numpy array of predictions
-				img = Image.fromarray(labelled_image[..., ::-1])  # RGB PIL image
-				open_cv_image = np.array(img) 
-				# Convert RGB to BGR 
-				image1 = open_cv_image[:, :, ::-1].copy() 
-
-				cv2.imshow("Img1 Labelled", image1)
-
-				cv2.waitKey(0)
-				cv2.destroyAllWindows()
+				self.show_labelled_image("Looking for one screw")
 
 				# A catch incase something incorrect was detected
 				if input("Proceed?: ") != 'y':
 					exit()
 
-				# Given at least one screw is detected, find the closest to the image center
-				box1_centres = self.extract_bbx_centres(img1_predictions[0].boxes)
+				# Find the box center closest to the image center
+				closest_box_to_center = (0, 1000, (0, 0))
 
-				print(f"box1_centre: {box1_centres}")
+				for i in range(self.num_predictions):
+					# if box is of class screw, find the centre of the box
+					# We are assuming only one screw is within the image and is detected correctly in both images.
+					if self.predictions.cls[i] == 0:
+						## Try simply finding the middle of the bounding box
+						# Convert to numpy array and select the screw box (will be the first in the list if only one was detected)
+						xyxy_coordinates = self.coordinates_xyxy[i]
 
-				camera_to_screw = self.get_vector_to_screw(box1_centres, Zd_depth)
+						top_left = (xyxy_coordinates[0], xyxy_coordinates[1])
+						bottom_right = (xyxy_coordinates[2], xyxy_coordinates[3])
+
+						centre_coordinate = (top_left[0] + (bottom_right[0] - top_left[0]) / 2, top_left[1] + (bottom_right[1] - top_left[1]) / 2)
+						euclidean_distance_from_center = np.linalg.norm(centre_coordinate - image_center)
+						
+						if euclidean_distance_from_center < closest_box_to_center[1]:
+							closest_box_to_center = (i, euclidean_distance_from_center, centre_coordinate)
+					#TODO: Apply some de-duplicate algorithm
+
+				# Find closest box to centre and pass to get vector
+				camera_to_screw = self.get_vector_to_screw(closest_box_to_center[2], Zd_depth)
 
 				print("Predicted distance from camera to screw: {}".format(camera_to_screw))
 
-				angle = get_wrist_angle()
+				angle = self.get_wrist_angle()
 				print("Wrist angle: {}".format(angle))
 
 				if angle != None:
@@ -298,25 +331,20 @@ class Client():
 				print(f"Predicted distance from robot head to screw: {motor_to_screw}")		
 				
 				# Cv2 display the first image with the location of the screw and the centre of the image both a dots
-				cv2.circle(image1, (int(box1_centres[0][0]), int(box1_centres[0][1])), 5, (0, 0, 255), -1)
-				cv2.circle(image1, (int(image_center[0]), int(image_center[1])), 5, (0, 255, 0), -1)
-				cv2.imshow("Img1", image1)
-
-				if cv2.waitKey(0) == 27:
-					cv2.destroyAllWindows()
+				cv2.circle(self.image, (int(closest_box_to_center[2][0]), int(closest_box_to_center[2][1])), 5, (0, 0, 255), -1)
+				cv2.circle(self.image, (int(image_center[0]), int(image_center[1])), 5, (0, 255, 0), -1)
+				
+				self.show_image("Img1")
 
 				if input("Enter y to proceed: ") == 'y':
 					print("Moving to screw")
 				else:
 					print("Move cancelled")
-					return False
-				if camera_offset != 0:
-					print(motor_to_screw)
-					print(requests.post(server_address + "/move_by_vector/",
-										data=bytes(json.dumps(motor_to_screw), 'utf-8')).content)
-					moving_to_screw = True
-				else:
 					continue
+				
+				print(motor_to_screw)
+				if self.comms.move_by_vector(motor_to_screw):
+					print("Move Successful")
 
 				cv2.destroyAllWindows()
 			except Exception as e:
@@ -339,8 +367,7 @@ class Client():
 
 	def locate_screw_rel_to_robot(self, candidate_box_data):
 		# Get the robots current location
-		location = requests.get(server_address + "/get_position/")
-		location = location.json()
+		location = self.comms.get_position()
 		print("Last Successful Move: {}".format(location))
 
 		# Calculate a vector for the screw
@@ -365,11 +392,12 @@ class Client():
 		candidate_box_data['loc'] = robot_to_screw
 		
 
-	def search_for_screws(self, function_args):
-		# Create a dict of detections, with the key being the image class and the value being its location
-
-		(image, box_locations) = function_args
-
+	# Given an image:
+	# 	Detect bounding boxes
+	#	Add box details to a dictionary
+	#	Identify overlapping bounding boxes
+	#	Remove overlapping hole boxes and add screws to holes when overlapping.
+	def search_for_screws(self):
 		# Determien if two boxes overlap
 		def overlap(box1, box2):
 			x1, y1, x2, y2 = box1
@@ -383,42 +411,22 @@ class Client():
 			return the_or # If any of these are true, they don't overlap
 
 		
-		Logging.write_log("client", "\nNew Run:\n")
+		logging_absl.write_log("client", "\nNew Run:\n")
 		try:		
 			# Locate and box the screws in both images
-			img_predictions = self.model(image)
+			self.detect()
 
-			if len(img_predictions[0].boxes.boxes) != 0:
-				# DEBUG
-				img_array = img_predictions[0].plot()  # plot a BGR numpy array of predictions
-				img = Image.fromarray(img_array[..., ::-1])  # RGB PIL image
-				open_cv_image = np.array(img) 
-				# Convert RGB to BGR 
-				labelled_image = open_cv_image[:, :, ::-1].copy() 
-
-				cv2.imshow("Img1", labelled_image)
-				if cv2.waitKey(0) == 27:
-					cv2.destroyAllWindows()
-					exit()
-
-				cv2.destroyAllWindows()
-				# DEBUG
-					
+			if len(self.num_predictions) != 0:
 				# Structure:
 				#	{index: {class: int, 'box': [x1, y1, x2, y2], 'conf': float, 'loc': [x, y, z], 'centre': [x, y]}}}
 				candidate_screw_boxes = {}
 				
-				# Given at least one screw is detected, find the closest to the image center
-				for i in range(len(img_predictions[0].boxes.boxes)):
-					boxes_data = img_predictions[0].boxes
-
+				# Create a dictionary entry for each box prediction
+				for i in range(self.num_predictions):
 					# Convert to numpy array and select the screw box (will be the first in the list if only one was detected)
-					xyxy_coordinates = boxes_data.xyxy.detach().cpu().numpy()
-					xyxy_coordinates = xyxy_coordinates[i]
-
-					box_cls = int(boxes_data.cls[i].detach().cpu())
-
-					conf = boxes_data.conf[i].detach().cpu().numpy()
+					xyxy_coordinates = self.coordinates_xyxy[i]
+					box_cls = int(self.box_cls[i])
+					conf = self.box_conf[i]
 
 					top_left = (xyxy_coordinates[0], xyxy_coordinates[1])
 					bottom_right = (xyxy_coordinates[2], xyxy_coordinates[3])
@@ -428,8 +436,8 @@ class Client():
 								top_left[1] + (bottom_right[1] - top_left[1]) / 2)
 
 					# Add the box, we will run check later for overlap
-					if len(box_locations) != 0:
-						index = max(box_locations.keys()) + i+1
+					if len(self.bounding_boxes) != 0:
+						index = max(self.bounding_boxes.keys()) + i+1
 					else:
 						index = i
 					candidate_screw_boxes[index] = {'class': box_cls, 'box': xyxy_coordinates, 
@@ -476,10 +484,6 @@ class Client():
 									indeces_to_remove.append(candidate_box_index_1)
 									reasons_to_remove.append('screw')
 
-				# Show all the boxes before removal
-				for i, candidate_box_data in candidate_screw_boxes.items():
-					print(f"{i}: {candidate_box_data}")
-
 				# Remove the overlapping boxes
 				print(f"Removing boxes:\n")
 				for index, screw in enumerate(indeces_to_remove):
@@ -491,22 +495,22 @@ class Client():
 				for i, candidate_box_data in candidate_screw_boxes.items():
 					#locate_screw_rel_to_robot(candidate_box_data)
 					if candidate_box_data['class'] == 1 and 'screw' in candidate_box_data.keys():
-						locate_screw_rel_to_robot(candidate_box_data['screw'])
+						self.locate_screw_rel_to_robot(candidate_box_data['screw'])
 				
 				# Display all candidate screw boxes as dots on the image
 				for i, candidate_box_data in candidate_screw_boxes.items():
 					# Check the boundig box is a hole and if it contains a screw
 					if candidate_box_data['class'] == 1:
 						if 'screw' not in candidate_box_data.keys():
-							cv2.circle(image, (int(candidate_box_data['centre'][0]), int(candidate_box_data['centre'][1])), 5, (255, 0, 0), -1)
+							cv2.circle(self.image, (int(candidate_box_data['centre'][0]), int(candidate_box_data['centre'][1])), 5, (255, 0, 0), -1)
 						if candidate_box_data['class'] == 1 and 'screw' in candidate_box_data.keys():
 							# Draw a dot for the screws centre
-							cv2.circle(image, (int(candidate_box_data['screw']['centre'][0]), int(candidate_box_data['screw']['centre'][1])), 2, (0, 0, 255), -1)
+							cv2.circle(self.image, (int(candidate_box_data['screw']['centre'][0]), int(candidate_box_data['screw']['centre'][1])), 2, (0, 0, 255), -1)
 					else:
 						# Draw a dot for the screws centre
-						cv2.circle(image, (int(candidate_box_data['centre'][0]), int(candidate_box_data['centre'][1])), 2, (0, 255, 0), -1)
+						cv2.circle(self.image, (int(candidate_box_data['centre'][0]), int(candidate_box_data['centre'][1])), 2, (0, 255, 0), -1)
 
-				box_locations.update(candidate_screw_boxes)
+				self.bounding_boxes.update(candidate_screw_boxes)
 
 			else:
 				print("Error: No object was detected in one of the frames")
@@ -518,51 +522,39 @@ class Client():
 
 
 	def get_simple_photo(self):
-		ImgRequest = requests.get(server_address + "/get_simple_photo")
-		Logging.write_log("client", "Received Image from Server")
+		img_request = self.comms.get_simple_photo()
+		logging.write_log("client", "Received Image from Server")
 
-		if ImgRequest.status_code == requests.codes.ok:
+		if img_request.status_code == requests.codes.ok:
 			# Read numpy array bytes
-			np_zfile = np.load(io.BytesIO(ImgRequest.content))
+			np_zfile = np.load(io.BytesIO(img_request.content))
 
 			image = np_zfile['arr_0']
 
 			return image
 		else:
-			print("Error: {}".format(ImgRequest.status_code))
+			print("Error: {}".format(img_request.status_code))
 			return 1
 
 
 	def get_photo(self):
-		ImgRequest = requests.get(server_address + "/get_photo")
-		Logging.write_log("client", "Received Image from Server")
-
-		if ImgRequest.status_code == requests.codes.ok:
-			# Read numpy array bytes
-			np_zfile = np.load(io.BytesIO(ImgRequest.content))
-
-			image = np_zfile['arr_0']
-
-			return image
-		else:
-			print("Error: {}".format(ImgRequest.status_code))
-			return 1
+		return self.comms.get_photo()
 
 	# Create a function to get the wrist angle (this is separate for simplicity)
 	def get_wrist_angle(self):
-		AngleRequest = requests.get(server_address + "/get_wrist_angle")
-		Logging.write_log("client", "Received Angle from Server")
+		angle_request = self.comms.get_wrist_angle()
+		logging.write_log("client", "Received Angle from Server")
 
-		if AngleRequest.status_code == requests.codes.ok:
+		if angle_request.status_code == requests.codes.ok:
 			# Read data
-			angle = AngleRequest.json()['angle']
+			angle = angle_request.json()['angle']
 
 			return angle
 		else:
 			return None
 
 	def try_annotate_and_save_image(self, function_args):
-		(image, image_id) = function_args
+		(self.image, image_id) = function_args
 
 		# Create names
 		file_name = base_directory + 'images/' + str(image_id)
@@ -570,27 +562,29 @@ class Client():
 		annotations_name = file_name + ".txt"
 		
 		# Save image
-		img_data = Image.fromarray(image)
+		img_data = Image.fromarray(self.image)
 		img_data.save(image_name)
 
 		# If any objects are detected, save the bounding box numbers in a file associated with the image
-		img_boxes = self.model(image)	
+		self.detect()
 
-		if len(img_boxes[0].boxes.boxes) != 0:
+		if self.num_predictions != 0:
 
 			# Write the annotations to the target directory in yolo format
 			# Write the bounding box coordinates to a text file
 			with open(annotations_name, "w") as box_file:
-				boxes = img_boxes[0].boxes
-				for i in range(len(boxes.xywhn)):
-					xywhn_coordinates = boxes.xywhn.detach().cpu().numpy()
-					xywhn_coordinates = xywhn_coordinates[i]
-					box_class = int(boxes.cls[i].detach().cpu())
+				for i in range(self.num_predictions):
+					xywhn_coordinates = self.coordinates_xywhn[i]
+					box_class = int(self.box_cls[i])
 
-					box_file.write(str(box_class) + " " + str(xywhn_coordinates[0]) + " " + str(xywhn_coordinates[1]) + " " + str(xywhn_coordinates[2]) + " " + str(xywhn_coordinates[3]) + "\n")
+					box_file.write(str(box_class) + " " + 
+										str(xywhn_coordinates[0]) + " " + 
+										str(xywhn_coordinates[1]) + " " + 
+										str(xywhn_coordinates[2]) + " " + 
+										str(xywhn_coordinates[3]) + "\n")
 
 	# Write a function to plan a route and move the robot to each screw	
-	def plan_route_to_screws(self, bounding_boxes):
+	def plan_route_to_screws(self):
 		# Create a new dictionary for the bounding boxes with index and loc
 		# Structure:
 		#	{index: {target_index = int, 'distance': int}}
@@ -598,14 +592,13 @@ class Client():
 
 		# Extract only the screw locations from the hole bounding boxes
 		# Done here to allow flexibility in the bounding box structure in the previous function
-		for index, box in bounding_boxes.items():
+		for index, box in self.bounding_boxes.items():
 			if 'screw' in box.keys():
 				locations_dict[index] = {'index': index, 'loc': box['screw']['loc'], 'distances': {}}
 
 		# Add a box for the robot location
 		# Request the robots current location
-		location = requests.get(server_address + "/get_position/")
-		location = location.json()
+		location = self.comms.get_position()
 		locations_dict['robot'] = {'index': 'robot', 'loc': location, 'distances': {}}
 
 		# Calculate the euclidean distance between each screw bounding box
@@ -657,42 +650,35 @@ class Client():
 			
 			# Move to each screw in the screw_locations array
 			for screw_loc in screw_locations:
-				# Move the robot to the screw
-				print(requests.post(server_address + "/set_position/",
-						data=bytes(json.dumps(screw_loc), 'utf-8')).content)
-				# Wait for user input to move to the next screw
-				if input("Enter y to proceed: ") == 'y':
-					print("Moving to screw")
+				# Call API to move robot
+				self.comms.set_position(screw_loc)
 		except Exception as e:
 			print("Move to screws failed")
 			print(str(e))
 
 	# Function to plot screw x,y coordinates on a graph representing the surface of the laptop
-	def plot_screw_locations(self, bounding_boxes):
-		# Iterate through bounding_boxes to plot the x and y of the loc of each screw
-		for index, box in bounding_boxes.items():
+	def plot_screw_locations(self):
+		# Iterate through self.bounding_boxes to plot the x and y of the loc of each screw
+		for _, box in self.bounding_boxes.items():
 			if 'screw' in box.keys():
 				plt.scatter(box['screw']['loc']['Yd'], box['screw']['loc']['Xd'])
-		# Fix the axis scale
-		# plt.axis([0, 300, -150, 150])
 
 		# Show the plot
 		plt.show()
 
-	def find_and_contact_screws(self):
+	def touch_all_screws(self):
 		try:
 			# Create the dict to store the screw data and add it to the function args
-			bounding_boxes = {}
+			self.bounding_boxes = {}
 
-			function_args = (4, bounding_boxes)
 			# Build list of screws
-			self.roam_and_apply_function(search_for_screws, function_args)
+			self.roam_and_apply_function(self.search_for_screws, function_type.DETECT_MULTIPLE_SCREWS)
 
 			# Display the x and y coordinates of the screws on a graph representing the surface of the laptop
-			self.plot_screw_locations(bounding_boxes)
+			self.plot_screw_locations()
 
 			# Build route to screws
-			route = self.plan_route_to_screws(bounding_boxes)
+			route = self.plan_route_to_screws()
 
 			print("Route: \n{}".format(route))
 
@@ -703,9 +689,7 @@ class Client():
 			print(str(e))
 
 
-	def roam_and_apply_function(self, function, function_args):
-		if function_args[0] == 5:
-			image_id = function_args[2]
+	def roam_and_apply_function(self, function, function_type):
 
 		direction = -1
 		photo_gap = 50
@@ -713,9 +697,9 @@ class Client():
 		robot_bounds = [150, 180, 150]
 		robot_location = [150, 180, 150]
 
-		requests.post(server_address + "/set_position/",
-					data=bytes(json.dumps({'Xd': robot_location[0], 'Yd': robot_location[1], 'Zd': robot_location[2]}),
-								'utf-8'))
+		destination = {'Xd': robot_location[0], 'Yd': robot_location[1], 'Zd': robot_location[2]}
+		# Call API to move robot
+		self.comms.set_position(destination)
 
 		scan_complete = False
 		while not scan_complete:
@@ -723,29 +707,25 @@ class Client():
 			y_delta = 0
 
 			# Take photo
-			image = self.get_photo()
-			if type(image) is int:
-				print("Get photo failed")
+			if not self.get_photo():
+				print("Failed to take photo")
 				continue
 
 			try:
-				if function_args[0] == 4:
-					function_data = (function_args[1], image, function_args[2])
-				elif function_args[0] == 5:
-					function_data = (function_args[1], image, image_id)
+				if function_type == function_type.DETECT_MULTIPLE_SCREWS:
+					function_data = (function_type[1], self.image, function_type[2])
+				elif function_type == function_type.GATHER_DATA:
+					function_data = (function_type[1], self.image, image_id)
 					image_id += 1
 
 				function(function_data)
 
-
 				# Move horizontally within Lego bounds
-				if mag(robot_location[1] + (direction * photo_gap)) <= robot_bounds[1]:
+				if abs(robot_location[1] + (direction * photo_gap)) <= robot_bounds[1]:
 					robot_location[1] += direction * photo_gap
 					y_delta = direction * photo_gap
 
-					MoveResponse = requests.post(server_address + "/move_by_vector/",
-												data=bytes(json.dumps({'Xd': x_delta, 'Yd': y_delta, 'Zd': 0}), 'utf-8'))
-					if json.loads(MoveResponse.content)['response']:
+					if self.comms.move_by_vector({'Xd': x_delta, 'Yd': y_delta, 'Zd': 0}):
 						print("Successful Move")
 				else:  # Move up x-axis, change direction
 					robot_location[0] += photo_gap
@@ -754,39 +734,33 @@ class Client():
 
 					moved_in_x = False
 					while not moved_in_x:
-						Logging.write_log("client", "Attempt Move Robot")
+						logging.write_log("client", "Attempt Move Robot")
 
-						MoveResponse = requests.post(server_address + "/move_by_vector/",
-													data=bytes(json.dumps({'Xd': x_delta, 'Yd': y_delta, 'Zd': 0}),
-																'utf-8'))
-						if json.loads(MoveResponse.content)['response']:
+						if self.comms.move_by_vector({'Xd': x_delta, 'Yd': y_delta, 'Zd': 0}):
 							moved_in_x = True
 						else:
 							# If not passed y center, move further towards center
-							if sign(direction) is not sign(robot_location[1]) and mag(
+							if np.sign(direction) is not np.sign(robot_location[1]) and abs(
 									robot_location[1] + (direction * photo_gap)) <= robot_bounds[1]:
 								robot_location[1] += direction * photo_gap
 								y_delta = direction * photo_gap
 							# Crossed y=0 and cannot move forward in x means reached far side
-							elif sign(direction) == sign(robot_location[1]) and mag(
+							elif np.sign(direction) == np.sign(robot_location[1]) and abs(
 									robot_location[1] + (direction * photo_gap)) <= robot_bounds[1]:
 								scan_complete = True
 								break
 			except Exception as e:
 				print(str(e))
 
-		if function_args[0] == 4:
+		if function_type[0] == function_type.DETECT_MULTIPLE_SCREWS:
 			return 
-		elif function_args[0] == 5:
-			# Reset robot location
-			status = requests.post(server_address + "/set_position/",
-						data=bytes(json.dumps({'Xd': 200, 'Yd': 0, 'Zd': 150}), 'utf-8'))
-
-		print(status.content)
+		elif function_type[0] == function_type.GATHER_DATA:
+			# Call API to move robot
+			self.comms.set_position(robot_default_location)
 
 	def scan_laptops(self):
 		# Prepared id for next laptop
-		last_image_num = -1
+		self.last_image_num = -1
 
 		while True:
 			another_laptop = input("Ready to scan the laptop?: ")
@@ -813,57 +787,46 @@ class Client():
 					signal.signal(signal.SIGINT, signal_handler)
 				else:
 					# Take the laptop id to start with as the largest file name
-					last_image_num = max([int(file_name.split('.')[0]) for file_name in os.listdir(base_directory + 'images/')])
-					last_image_num -= 1 # image id is incremented before saving
+					self.last_image_num = max([int(file_name.split('.')[0]) for file_name in os.listdir(base_directory + 'images/')])
+					self.last_image_num -= 1 # image id is incremented before saving
 
 			else:
 				print("Closing scan")
 				return 0
 
-			roam_and_apply_function(try_annotate_and_save_image, (5, last_image_num))
+			self.roam_and_apply_function(self.try_annotate_and_save_image, function_type.GATHER_DATA)
 
 
 	def find_robot_limit(self):
-		cmd_success = True
+		has_moved = True
 		axis = 'x'
 		direction = -1
 		increment = 1
 		y_limit = 120
 		# x_limit = 150
 
-		requests.post(server_address + "/set_position/",
-					data=bytes(json.dumps({'Xd': 150, 'Yd': 0, 'Zd': 150}), 'utf-8'))
+		destination = {'Xd': 150, 'Yd': 0, 'Zd': 150}
+		# Call API to move robot
+		self.comms.set_position(destination)
 
-		while cmd_success:
-			status = requests.Response
-
+		while has_moved:
 			# @z=150 Closest x=150
 			if axis == 'x':
-				status = requests.post(server_address + "/move_by_vector/",
-									data=bytes(json.dumps({'Xd': direction * 1, 'Yd': 0, 'Zd': 0}), 'utf-8'))
+				has_moved = self.comms.move_by_vector({'Xd': direction * 1, 'Yd': 0, 'Zd': 0})
 			# @z=150 Left most y =
 			elif axis == 'y':
-				status = requests.post(server_address + "/move_by_vector/",
-									data=bytes(json.dumps({'Xd': 0, 'Yd': direction * 1, 'Zd': 0}), 'utf-8'))
+				has_moved = self.comms.move_by_vector({'Xd': 0, 'Yd': direction * 1, 'Zd': 0})
 			elif axis == 'z':
-				status = requests.post(server_address + "/move_by_vector/",
-									data=bytes(json.dumps({'Xd': 0, 'Yd': 0, 'Zd': direction * 1}), 'utf-8'))
+				has_moved = self.comms.move_by_vector({'Xd': 0, 'Yd': 0, 'Zd': direction * 1})
 			increment += 1
 
-			if status.content != bytes('Move Successful: False', 'utf-8') :
-				cmd_success = True
-			else:
-				cmd_success = False
-
-				status = requests.get(server_address + "/get_position/")
-				print("Last Successful Move: {}".format(status.content))
+			if not has_moved :
+				print("Last Successful Move: {}".format(self.comms.get_position()))
 
 
-	def reset_robotic_arm():
-		status = requests.post(server_address + "/set_position/",
-					data=bytes(json.dumps({'Xd': 200, 'Yd': 0, 'Zd': 150}), 'utf-8'))
-
-		print(status.content)
+	def reset_robotic_arm(self):
+		# Call API to move robot
+		self.comms.set_position(robot_default_location)
 
 
 	def main(self, _argv):
@@ -900,7 +863,7 @@ class Client():
 				self.find_and_move_to_screw()
 			elif task == 4:
 				print("Laptop Search")
-				self.find_and_contact_screws()
+				self.touch_all_screws()
 			elif task == 5:
 				print("Laptop Scan")
 				self.scan_laptops()
