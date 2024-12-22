@@ -1,3 +1,4 @@
+import os
 import cv2
 import numpy as np
 import random
@@ -26,6 +27,8 @@ def show_image_with_click_coordinates(image_path):
     # Bind the callback function to the window
     cv2.setMouseCallback('Image', get_coordinates)
 
+    res = img.shape[0]//1.5
+    img = cv2.resize(img, (int(img.shape[1]//1.5), int(img.shape[0]//1.5)))
     # Display the image
     cv2.imshow('Image', img)
 
@@ -36,13 +39,14 @@ def show_image_with_click_coordinates(image_path):
             break
 
     # Save the annotated image
-    cv2.imwrite('C:/Users/drago/Downloads/2592,1944-z-150-fl-130/z-150-focus-250-annot.jpg', img)
-    print("Annotated image saved as 'annotated_image.jpg'")
+    file = image_path.split('.')[0] + '_annot.jpg'
+    cv2.imwrite(file, img)
+    print(f"Annotated image saved as {file}")
 
     # Clean up
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    image_path = 'C:/Users/drago/Downloads/2592,1944-z-150-fl-130/z-150-focus-250-annot.jpg'  # Replace with your image file path
+    image_path = r"C:\Users\drago\Downloads\checkerboard_pi_images\test\localise_hr_test_2.jpg"  # Replace with your image file path
     show_image_with_click_coordinates(image_path)
 

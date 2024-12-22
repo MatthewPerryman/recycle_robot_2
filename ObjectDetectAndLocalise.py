@@ -133,8 +133,6 @@ class Client():
 					# Load trained model from weights file
 					self.model = YOLO('yolov8_model/2-yolo-best.pt')
 					self.model.predict([np.zeros((640, 480, 3), dtype=np.uint8)])
-				elif model_type == 'tf':
-					self.model = Classifier()
 
 				self.comms = Comms()
 			else:
