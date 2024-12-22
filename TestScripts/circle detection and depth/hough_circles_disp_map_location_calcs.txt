@@ -1,0 +1,131 @@
+All Data Available on Onenote
+
+Depth = (focal_length * Camera_separation)/disparity
+
+Example 1
+Circle at (98, 44) in left image matches with (54, 44) in right image. Disparity: 44
+Circle at (406, 44) in left image matches with (360, 44) in right image. Disparity: 46
+Circle at (622, 72) in left image matches with (576, 72) in right image. Disparity: 46
+Circle at (298, 308) in left image matches with (252, 306) in right image. Disparity: 46
+
+
+Using
+Camera matrix left:
+ [[801.55383955   0.         305.58129421]
+ [  0.         800.9800178  195.84030218]
+ [  0.           0.           1.        ]]
+Distortion coefficients left:
+ [[ 7.52262753e-03 -3.37290154e-01 -3.58988068e-03 -4.36893114e-04
+   1.95011206e+00]]
+Camera matrix right:
+ [[792.01009571   0.         304.46152523]
+ [  0.         791.66246932 192.88226236]
+ [  0.           0.           1.        ]]
+Distortion coefficients right:
+ [[ 2.39409750e-02 -5.91783464e-01 -2.17929649e-03 -1.15826319e-03
+   3.99185295e+00]]
+Rotation matrix between the cameras:
+ [[ 0.99999872  0.00112425  0.00113501]
+ [-0.00112621  0.99999787  0.00172854]
+ [-0.00113306 -0.00172981  0.99999786]]
+Translation vector between the cameras:
+ [[-9.90404517]
+ [ 0.93895294]
+ [-1.9552384 ]]
+
+Baseline_camera_distance = sqrt(9.904^2 + 0.93895^2 + 1.955^2)  = 10.13868177341118 
+
+Focal_length_eff = (801.55+800.98 + 791.01+791.66)/4 = 796.3  
+Depth = focal length eff * base camera distance / image_disparity
+Depth = (796.3 * 10.1)/46 = 174.8398 
+
+Baseline_camera_distance = 10mm
+Depth = (796.3 * 10)/46 = 173.1087 
+
+Baseline_camera_distance = 10mm
+Focal_length_eff = 742.9
+Depth = (742.9 * 10)/46 = 161.5 
+
+Disparity = 44
+Baseline_camera_distance = 10mm
+Focal_length_eff = 742.9
+Depth = (742.9 * 10)/44 = 168.8409 
+
+
+
+Location check image 7:
+1) Circle at (560, 55) in left image matches with (503, 55) in right image. Disparity: 57
+	Depth = (742.9 * 10.13868)/57 = 132.1408 
+	X = ((503 - (640/2)) * 132.14) / 742.9 = 32.5503 
+	Y = ((abs(55 - (360/2))) * 132.14) / 742.9 = 22.23381343384036 
+2) Circle at (628, 297) in left image matches with (569, 292) in right image. Disparity: 59
+	Depth = (742.9 * 10.13868)/59 = 127.66145 
+	X = ((569 - (640/2)) * 127.66) / 742.9 = 42.7882 
+	Y = ((abs(292 - (360/2))) * 127.66) / 742.9 = 19.24608964867411  
+3) Circle at (408, 326) in left image matches with (356, 320) in right image. Disparity: 52
+	Depth = (742.9 * 10.13868)/52 = 144.84664 
+	X = ((356 - (640/2)) * 144.84664 ) / 742.9 = 7.01909 
+	Y = ((abs(320 - (360/2))) * 144.84664 ) / 742.9 = 27.29644582043344 
+4) Circle at (186, 276) in left image matches with (140, 271) in right image. Disparity: 46
+	Depth = (742.9 * 10.13868)/46 = 163.73968 
+	X = ((abs(140 - (640/2))) * 163.73968) / 742.9 = 39.67309516758647 
+	Y = ((abs(271 - (360/2))) * 163.73968 ) / 742.9 = 20.05695366805761 
+5) Circle at (108, 26) in left image matches with (63, 26) in right image. Disparity: 45
+	Depth = (742.9 * 10.13868)/45 = 167.37834 
+	X = ((abs(63 - (640/2))) * 167.37834 ) / 742.9 = 57.90312744649349 
+	Y = ((abs(26 - (360/2))) * 167.37834 ) / 742.9 = 34.69681566832683  
+6) Circle at (92, 276) in left image matches with (46, 270) in right image. Disparity: 46
+	Depth = (742.9 * 10.13868)/46 = 163.73968 
+	X = ((abs(46 - (640/2))) * 163.73968) / 742.9 = 60.3912670884372 
+	Y = ((abs(270 - (360/2))) * 163.73968) / 742.9 = 19.83654758379324 
+7) Circle at (92, 276) in left image matches with (140, 271) in right image. Disparity: 48
+	Depth = (742.9 * 10.13868)/48 = 156.9172 
+	X = ((abs(140 - (640/2))) * 156.9172) / 742.9 = 38.02005115089514 
+	Y = ((abs(271 - (360/2))) * 156.9172) / 742.9 = 19.22124808184143 
+
+
+2 with correct depth 
+2) Circle at (628, 297) in left image matches with (569, 292) in right image. Disparity: 59
+	Depth =155
+	X = ((abs(569 - (640/2))) * 155) / 742.9 = 51.95181047247274 
+	Y = ((abs(292 - (360/2))) * 155) / 742.9 = 23.36788262215641 
+	
+Eff_focal_length = 796
+2) Circle at (628, 297) in left image matches with (569, 292) in right image. Disparity: 59
+	Depth = (796 * 10.13868)/59 = 136.78626 
+	X = ((abs(569 - (640/2))) * 155) / 742.9 = 51.95181047247274 
+	Y = ((abs(292 - (360/2))) * 155) / 742.9 = 23.36788262215641 
+
+
+X is right/left, +ve/-ve
+Y is forward/back, +ve/-ve
+
+
+
+Location check image 7 with standard image (v2):
+1)Circle at (620, 260) in left image matches with (572, 258) in right image. Disparity: 48
+Yellow -  error here, about half way on Y
+	Depth = (742.9 * 10.13868)/48 = 156.9172
+	X = ((572 - (640/2)) * 156.9172) / 742.9 = 53.2281 
+	Y = ((258 - (360/2)) * 156.9172) / 742.9 = 16.4754
+2)Circle at (544, 46) in left image matches with (496, 46) in right image. Disparity: 48
+Purple - bang on
+	Depth = (742.9 * 10.13868)/48 = 156.9172
+	X = ((496 - (640/2)) * 156.9172) / 742.9 = 37.1752 
+	Y = ((46 - (360/2)) * 156.9172) / 742.9 = -28.3038
+3)Circle at (436, 308) in left image matches with (390, 312) in right image. Disparity: 46
+Red pink, bottom middle - Half way on Y (just short)
+We assume same depth (156) as 163 is too far
+	Depth = (742.9 * 10.13868)/46 = 163.73968
+	X = ((390 - (640/2)) * 163.73968) / 742.9 = 15.42843 
+	Y = ((312 - (360/2)) * 163.73968) / 742.9 = 29.0936 
+4)Circle at (120, 42) in left image matches with (74, 46) in right image. Disparity: 46
+Orange - 5 mm overshoot in x
+	Depth = (742.9 * 10.13868)/46 = 163.73968
+	X = ((74 - (640/2)) * 163.73968) / 742.9 = -54.2199 
+	Y = ((46 - (360/2)) * 163.73968) / 742.9 = -29.53442 
+5)Circle at (125, 296) in left image matches with (78, 297) in right image. Disparity: 47
+Light purple, bottom left - 5mm short on Y
+	Depth = (742.9 * 10.13868)/47 = 160.25586
+	X = ((78- (640/2)) *160.25586) / 742.9 = -52.20342 
+Y = ((297 - (360/2)) * 160.25586) / 742.9 = 25.23884 
